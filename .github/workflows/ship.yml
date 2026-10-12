@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     steps:
       - name: Checkout
@@ -42,4 +42,7 @@ jobs:
         with:
           name: apk
           path: bin/*.apk
-          if-no-files-found: error
+          if-no-files-found: errorcd $env:USERPROFILE\Documents\dota_game
+git add .github/workflows/ship.yml
+git commit -m "Исправлен workflow для сборки APK"
+git push github main

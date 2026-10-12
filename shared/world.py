@@ -13,7 +13,7 @@ MAX_HP = 100
 DAMAGE = 20
 RESPAWN_TIME = 2.0
 SCORE_TO_WIN = 5
-TURN_SPEED = 0.2   # ← скорость поворота: 0.05 медленно, 0.4 быстро
+TURN_SPEED = 0.2
 
 
 class World:
@@ -78,7 +78,6 @@ class World:
             length = math.hypot(dx, dy)
             p["dir_x"] = dx / length
             p["dir_y"] = dy / length
-            # ставим ЦЕЛЕВОЙ угол, а не текущий
             angle = -math.degrees(math.atan2(dy, dx))
             p["target_angle"] = angle
 
@@ -94,11 +93,7 @@ class World:
         p["last_shot"] = now
         bx = p["x"] + SIZE / 2
         by = p["y"] + SIZE / 2
-        # стреляем по ТЕКУЩЕМУ углу спрайта, а не по направлению ввода
-        # angle отсчитывается так: 0° — вправо, +90° — вверх (или наоборот,
-        # зависит от того, как отрисован спрайт)
         rad = math.radians(p["angle"])
-        # при "angle = 0 → вправо" используем:
         vx = math.cos(rad) * BULLET_SPEED
         vy = -math.sin(rad) * BULLET_SPEED
         self.bullets.append({
@@ -130,7 +125,6 @@ class World:
             p["x"] = max(0, min(W - SIZE, p["x"] + p["dx"] * SPEED))
             p["y"] = max(0, min(H - SIZE, p["y"] + p["dy"] * SPEED))
 
-            # --- ПЛАВНЫЙ ПОВОРОТ ---
             diff = p["target_angle"] - p["angle"]
             while diff > 180:
                 diff -= 360

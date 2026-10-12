@@ -20,6 +20,7 @@ STATE_WIN = "win"
 
 class Game:
     def __init__(self):
+        pygame.mixer.pre_init(44100, -16, 2, 512)
         pygame.init()
         self.screen = pygame.display.set_mode((W, H))
         pygame.display.set_caption("Сетевая 2D-игра")
@@ -63,6 +64,23 @@ class Game:
             print(f"[warn] не удалось загрузить спрайты: {e}")
             self.sprite_host = None
             self.sprite_guest = None
+
+        # загрузка звуков
+        try:
+            self.snd_shoot = pygame.mixer.Sound("assets/sounds/shoot.wav")
+            self.snd_hit = pygame.mixer.Sound("assets/sounds/hit.wav")
+            self.snd_death = pygame.mixer.Sound("assets/sounds/death.wav")
+            self.snd_win = pygame.mixer.Sound("assets/sounds/win.wav")
+            self.snd_shoot.set_volume(0.2)
+            self.snd_hit.set_volume(0.5)
+            self.snd_death.set_volume(0.6)
+            self.snd_win.set_volume(0.7)
+        except pygame.error as e:
+            print(f"[warn] не удалось загрузить звуки: {e}")
+            self.snd_shoot = None
+            self.snd_hit = None
+            self.snd_death = None
+            self.snd_win = None
 
     # ---------- МЕНЮ ----------
 
@@ -141,6 +159,8 @@ class Game:
                     self.match_over = True
                     self.winner_id = snap["winner_id"]
                     self.state = STATE_WIN
+                    if self.snd_win:
+                        self.snd_win.play()
 
             try:
                 conn.sendall(encode("state", snap))
@@ -225,6 +245,8 @@ class Game:
                     self.match_over = True
                     self.winner_id = msg["p"]["winner_id"]
                     self.state = STATE_WIN
+                    if self.snd_win:
+                        self.snd_win.play()
 
     # ---------- ЛОББИ ГОСТЯ ----------
 
@@ -326,6 +348,8 @@ class Game:
         if keys[pygame.K_SPACE]:
             with self.host_lock:
                 self.world.shoot(self.my_id)
+            if self.snd_shoot:
+                self.snd_shoot.play()
 
         dx = (keys[pygame.K_d] or keys[pygame.K_RIGHT]) - (keys[pygame.K_a] or keys[pygame.K_LEFT])
         dy = (keys[pygame.K_s] or keys[pygame.K_DOWN]) - (keys[pygame.K_w] or keys[pygame.K_UP])
@@ -341,6 +365,8 @@ class Game:
         if keys[pygame.K_SPACE]:
             try:
                 self.sock.sendall(encode("shoot", {}))
+                if self.snd_shoot:
+                    self.snd_shoot.play()
             except OSError:
                 self.running = False
 
@@ -469,9 +495,13 @@ class Game:
                         if self.mode == "host":
                             with self.host_lock:
                                 self.world.shoot(self.my_id)
+                            if self.snd_shoot:
+                                self.snd_shoot.play()
                         elif self.mode == "client":
                             try:
                                 self.sock.sendall(encode("shoot", {}))
+                                if self.snd_shoot:
+                                    self.snd_shoot.play()
                             except OSError:
                                 pass
 

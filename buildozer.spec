@@ -9,7 +9,7 @@ source.exclude_exts = spec,pyc,pyo
 source.exclude_dirs = tests,bin,venv,.venv,.git,.github,dist,buildozer,.buildozer,__pycache__
 
 version = 0.1
-requirements = python3==3.10.12,hostpython3==3.10.12,kivy==2.3.0,pyjnius==1.6.1,pygame
+requirements = python3==3.10.12,hostpython3==3.10.12,kivy==2.3.0,pygame
 
 orientation = landscape
 fullscreen = 1

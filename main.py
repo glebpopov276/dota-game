@@ -5,7 +5,7 @@ import time
 import pygame
 
 from shared.protocol import encode, decode
-from shared.world import World, W, H, SIZE
+from shared.world import World, W, H, SIZE, SCORE_TO_WIN
 
 PORT = 5555
 TICK = 1 / 30
@@ -15,6 +15,7 @@ STATE_MENU = "menu"
 STATE_HOST_LOBBY = "host_lobby"
 STATE_CLIENT_LOBBY = "client_lobby"
 STATE_GAME = "game"
+STATE_WIN = "win"
 
 
 class Game:
@@ -26,6 +27,7 @@ class Game:
         self.font = pygame.font.SysFont("Arial", 16)
         self.font_big = pygame.font.SysFont("Arial", 32)
         self.font_mid = pygame.font.SysFont("Arial", 22)
+        self.font_huge = pygame.font.SysFont("Arial", 56)
 
         self.state = STATE_MENU
         self.running = True
@@ -46,6 +48,21 @@ class Game:
         self.state_bullets = []
         self.state_time = 0.0
         self.prev_time = 0.0
+
+        self.match_over = False
+        self.winner_id = None
+        self.reset_requested = False
+
+        # загрузка спрайтов
+        try:
+            self.sprite_host = pygame.image.load("assets/sprites/player1.png").convert_alpha()
+            self.sprite_guest = pygame.image.load("assets/sprites/player2.png").convert_alpha()
+            self.sprite_host = pygame.transform.scale(self.sprite_host, (SIZE, SIZE))
+            self.sprite_guest = pygame.transform.scale(self.sprite_guest, (SIZE, SIZE))
+        except pygame.error as e:
+            print(f"[warn] не удалось загрузить спрайты: {e}")
+            self.sprite_host = None
+            self.sprite_guest = None
 
     # ---------- МЕНЮ ----------
 
@@ -111,10 +128,24 @@ class Game:
 
         while True:
             with self.host_lock:
+                if self.reset_requested:
+                    self.world.reset()
+                    self.reset_requested = False
+                    self.match_over = False
+                    self.winner_id = None
+
                 self.world.tick()
                 snap = self.world.snapshot()
+
+                if snap["match_over"] and not self.match_over:
+                    self.match_over = True
+                    self.winner_id = snap["winner_id"]
+                    self.state = STATE_WIN
+
             try:
                 conn.sendall(encode("state", snap))
+                if self.match_over:
+                    conn.sendall(encode("match_end", {"winner_id": self.winner_id}))
             except OSError:
                 break
             time.sleep(TICK)
@@ -138,6 +169,12 @@ class Game:
                 elif msg["t"] == "shoot":
                     with self.host_lock:
                         self.world.shoot(guest_id)
+                elif msg["t"] == "reset":
+                    with self.host_lock:
+                        self.reset_requested = True
+                        self.match_over = False
+                        self.winner_id = None
+                    self.state = STATE_GAME
 
         with self.host_lock:
             self.world.remove_player(guest_id)
@@ -184,6 +221,10 @@ class Game:
                         self.state_players = msg["p"]["players"]
                         self.state_bullets = msg["p"]["bullets"]
                         self.state_time = time.time()
+                elif msg["t"] == "match_end":
+                    self.match_over = True
+                    self.winner_id = msg["p"]["winner_id"]
+                    self.state = STATE_WIN
 
     # ---------- ЛОББИ ГОСТЯ ----------
 
@@ -238,6 +279,46 @@ class Game:
         except OSError:
             return "127.0.0.1"
 
+    # ---------- ЭКРАН ПОБЕДЫ ----------
+
+    def draw_win_screen(self):
+        self.screen.fill((20, 20, 30))
+
+        if self.winner_id == self.my_id:
+            title_text = "ПОБЕДА!"
+            title_color = (100, 255, 120)
+        else:
+            title_text = "ПОРАЖЕНИЕ"
+            title_color = (255, 100, 100)
+
+        title = self.font_huge.render(title_text, True, title_color)
+        self.screen.blit(title, (W // 2 - title.get_width() // 2, 140))
+
+        winner_name = "?"
+        players_dict = self.world.players if self.mode == "host" else self.state_players
+        if str(self.winner_id) in players_dict:
+            if self.mode == "client":
+                winner_name = players_dict[str(self.winner_id)]["name"]
+            else:
+                winner_name = players_dict[self.winner_id]["name"]
+
+        sub = self.font_big.render(f"Победитель: {winner_name}", True, (255, 255, 255))
+        self.screen.blit(sub, (W // 2 - sub.get_width() // 2, 240))
+
+        score_host = 0
+        score_guest = 0
+        for pid_s, p in players_dict.items():
+            if p["name"] == "Host":
+                score_host = p["score"]
+            elif p["name"] == "Guest":
+                score_guest = p["score"]
+
+        score_text = self.font_huge.render(f"{score_host} : {score_guest}", True, (255, 220, 100))
+        self.screen.blit(score_text, (W // 2 - score_text.get_width() // 2, 320))
+
+        hint = self.font_mid.render("Нажмите R для рестарта", True, (200, 200, 200))
+        self.screen.blit(hint, (W // 2 - hint.get_width() // 2, 440))
+
     # ---------- ИГРА ----------
 
     def update_game_host(self):
@@ -253,7 +334,7 @@ class Game:
             self.world.set_input(self.my_id, dx, dy)
             snap = self.world.snapshot()
 
-        self.render_game(snap["players"], snap["bullets"], alpha=1.0)
+        self.render_game(snap["players"], snap["bullets"], alpha=1.0, scores=True)
 
     def update_game_client(self):
         keys = pygame.key.get_pressed()
@@ -283,9 +364,9 @@ class Game:
         alpha = min(1.0, (now - t_cur) / dt) if dt > 0 else 1.0
         alpha = max(0.0, alpha)
 
-        self.render_game(snap, snap_bullets, alpha=alpha, prev=snap_prev)
+        self.render_game(snap, snap_bullets, alpha=alpha, prev=snap_prev, scores=True)
 
-    def render_game(self, players, bullets, alpha=1.0, prev=None):
+    def render_game(self, players, bullets, alpha=1.0, prev=None, scores=False):
         self.screen.fill((20, 20, 30))
 
         for b in bullets:
@@ -300,11 +381,19 @@ class Game:
                 p_prev = prev.get(pid_s, p)
                 x = p_prev["x"] + (p["x"] - p_prev["x"]) * alpha
                 y = p_prev["y"] + (p["y"] - p_prev["y"]) * alpha
+                angle = p.get("angle", 0)
             else:
                 x, y = p["x"], p["y"]
+                angle = p.get("angle", 0)
 
-            color = (100, 220, 120) if pid == self.my_id else (220, 100, 100)
-            pygame.draw.rect(self.screen, color, (x, y, SIZE, SIZE))
+            sprite = self.sprite_host if pid == self.my_id else self.sprite_guest
+            if sprite is not None:
+                rotated = pygame.transform.rotate(sprite, angle)
+                rect = rotated.get_rect(center=(x + SIZE // 2, y + SIZE // 2))
+                self.screen.blit(rotated, rect)
+            else:
+                color = (100, 220, 120) if pid == self.my_id else (220, 100, 100)
+                pygame.draw.rect(self.screen, color, (x, y, SIZE, SIZE))
 
             label = self.font.render(p["name"], True, (255, 255, 255))
             self.screen.blit(label, (x, y - 34))
@@ -315,9 +404,38 @@ class Game:
             pygame.draw.rect(self.screen, (60, 60, 60), (x, y - 12, bar_w, bar_h))
             pygame.draw.rect(self.screen, (220, 60, 60), (x, y - 12, bar_w * hp_frac, bar_h))
 
+        if scores:
+            score_host = 0
+            score_guest = 0
+            for pid_s, p in players.items():
+                if p["name"] == "Host":
+                    score_host = p.get("score", 0)
+                elif p["name"] == "Guest":
+                    score_guest = p.get("score", 0)
+            score_text = self.font_big.render(
+                f"Host {score_host}  :  {score_guest} Guest   (до {SCORE_TO_WIN})",
+                True, (255, 220, 100))
+            self.screen.blit(score_text, (W // 2 - score_text.get_width() // 2, 10))
+
         role = "HOST" if self.mode == "host" else "CLIENT"
         info = self.font.render(f"{role}  id={self.my_id}  WASD + Пробел — стрелять", True, (200, 200, 200))
-        self.screen.blit(info, (10, 10))
+        self.screen.blit(info, (10, H - 30))
+
+    def request_reset(self):
+        if self.mode == "host":
+            with self.host_lock:
+                self.reset_requested = True
+            self.match_over = False
+            self.winner_id = None
+            self.state = STATE_GAME
+        elif self.mode == "client":
+            try:
+                self.sock.sendall(encode("reset", {}))
+            except OSError:
+                pass
+            self.match_over = False
+            self.winner_id = None
+            self.state = STATE_GAME
 
     # ---------- ГЛАВНЫЙ ЦИКЛ ----------
 
@@ -357,6 +475,10 @@ class Game:
                             except OSError:
                                 pass
 
+                elif self.state == STATE_WIN:
+                    if ev.type == pygame.KEYDOWN and ev.key == pygame.K_r:
+                        self.request_reset()
+
             if self.state == STATE_MENU:
                 self.draw_menu()
             elif self.state == STATE_HOST_LOBBY:
@@ -368,6 +490,8 @@ class Game:
                     self.update_game_host()
                 elif self.mode == "client":
                     self.update_game_client()
+            elif self.state == STATE_WIN:
+                self.draw_win_screen()
 
             pygame.display.flip()
             self.clock.tick(FPS)

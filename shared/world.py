@@ -12,6 +12,8 @@ SHOOT_COOLDOWN = 0.3
 MAX_HP = 100
 DAMAGE = 20
 RESPAWN_TIME = 2.0
+SCORE_TO_WIN = 5
+TURN_SPEED = 0.2   # ← скорость поворота: 0.05 медленно, 0.4 быстро
 
 
 class World:
@@ -20,6 +22,8 @@ class World:
         self.bullets = []
         self.next_id = 1
         self.next_bullet_id = 1
+        self.match_over = False
+        self.winner_id = None
 
     def add_player(self, name: str = None) -> int:
         pid = self.next_id
@@ -31,10 +35,13 @@ class World:
             "dy": 0,
             "dir_x": 1,
             "dir_y": 0,
+            "angle": 0,
+            "target_angle": 0,
             "hp": MAX_HP,
             "alive": True,
             "respawn_at": 0.0,
             "last_shot": 0.0,
+            "score": 0,
             "name": name or f"P{pid}",
         }
         return pid
@@ -42,18 +49,42 @@ class World:
     def remove_player(self, pid: int):
         self.players.pop(pid, None)
 
+    def reset(self):
+        self.match_over = False
+        self.winner_id = None
+        self.bullets = []
+        for pid, p in self.players.items():
+            p["hp"] = MAX_HP
+            p["alive"] = True
+            p["score"] = 0
+            p["x"] = W // 2 + (pid - 1) * 60 - 60
+            p["y"] = H // 2
+            p["respawn_at"] = 0.0
+            p["last_shot"] = 0.0
+            p["angle"] = 0
+            p["target_angle"] = 0
+
     def set_input(self, pid: int, dx: int, dy: int):
         if pid not in self.players:
             return
         p = self.players[pid]
+        if self.match_over:
+            p["dx"] = 0
+            p["dy"] = 0
+            return
         p["dx"] = max(-1, min(1, int(dx)))
         p["dy"] = max(-1, min(1, int(dy)))
         if dx != 0 or dy != 0:
             length = math.hypot(dx, dy)
             p["dir_x"] = dx / length
             p["dir_y"] = dy / length
+            # ставим ЦЕЛЕВОЙ угол, а не текущий
+            angle = -math.degrees(math.atan2(dy, dx))
+            p["target_angle"] = angle
 
     def shoot(self, pid: int):
+        if self.match_over:
+            return
         now = time.time()
         p = self.players.get(pid)
         if not p or not p["alive"]:
@@ -63,18 +94,28 @@ class World:
         p["last_shot"] = now
         bx = p["x"] + SIZE / 2
         by = p["y"] + SIZE / 2
+        # стреляем по ТЕКУЩЕМУ углу спрайта, а не по направлению ввода
+        # angle отсчитывается так: 0° — вправо, +90° — вверх (или наоборот,
+        # зависит от того, как отрисован спрайт)
+        rad = math.radians(p["angle"])
+        # при "angle = 0 → вправо" используем:
+        vx = math.cos(rad) * BULLET_SPEED
+        vy = -math.sin(rad) * BULLET_SPEED
         self.bullets.append({
             "id": self.next_bullet_id,
             "owner": pid,
             "x": bx,
             "y": by,
-            "vx": p["dir_x"] * BULLET_SPEED,
-            "vy": p["dir_y"] * BULLET_SPEED,
+            "vx": vx,
+            "vy": vy,
             "born": now,
         })
         self.next_bullet_id += 1
 
     def tick(self):
+        if self.match_over:
+            return
+
         now = time.time()
 
         for p in self.players.values():
@@ -88,6 +129,14 @@ class World:
 
             p["x"] = max(0, min(W - SIZE, p["x"] + p["dx"] * SPEED))
             p["y"] = max(0, min(H - SIZE, p["y"] + p["dy"] * SPEED))
+
+            # --- ПЛАВНЫЙ ПОВОРОТ ---
+            diff = p["target_angle"] - p["angle"]
+            while diff > 180:
+                diff -= 360
+            while diff < -180:
+                diff += 360
+            p["angle"] += diff * TURN_SPEED
 
         alive_bullets = []
         for b in self.bullets:
@@ -112,6 +161,13 @@ class World:
                         p["hp"] = 0
                         p["alive"] = False
                         p["respawn_at"] = now + RESPAWN_TIME
+
+                        killer = self.players.get(b["owner"])
+                        if killer:
+                            killer["score"] += 1
+                            if killer["score"] >= SCORE_TO_WIN:
+                                self.match_over = True
+                                self.winner_id = b["owner"]
                     break
 
             if not hit:
@@ -125,6 +181,8 @@ class World:
                 str(pid): {
                     "x": p["x"], "y": p["y"], "name": p["name"],
                     "hp": p["hp"], "alive": p["alive"],
+                    "score": p["score"],
+                    "angle": p["angle"],
                 }
                 for pid, p in self.players.items()
             },
@@ -132,4 +190,6 @@ class World:
                 {"x": b["x"], "y": b["y"]}
                 for b in self.bullets
             ],
+            "match_over": self.match_over,
+            "winner_id": self.winner_id,
         }

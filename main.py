@@ -1,8 +1,20 @@
-# language: Python, file: main.py, target: cross-platform
+# language: Python, file: main.py, target: cross-platform (Android + PC)
 import socket
 import threading
 import time
-import pygame
+
+from kivy.app import App
+from kivy.uix.widget import Widget
+from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.floatlayout import FloatLayout
+from kivy.uix.button import Button
+from kivy.uix.label import Label
+from kivy.uix.textinput import TextInput
+from kivy.graphics import Color, Rectangle, PushMatrix, PopMatrix, Rotate
+from kivy.clock import Clock
+from kivy.core.window import Window
+from kivy.core.audio import SoundLoader
+from kivy.core.image import Image as CoreImage
 
 from shared.protocol import encode, decode
 from shared.world import World, W, H, SIZE, SCORE_TO_WIN
@@ -18,31 +30,24 @@ STATE_GAME = "game"
 STATE_WIN = "win"
 
 
-class Game:
-    def __init__(self):
-        pygame.mixer.pre_init(44100, -16, 2, 512)
-        pygame.init()
-        self.screen = pygame.display.set_mode((W, H))
-        pygame.display.set_caption("Сетевая 2D-игра")
-        self.clock = pygame.time.Clock()
-        self.font = pygame.font.SysFont("Arial", 16)
-        self.font_big = pygame.font.SysFont("Arial", 32)
-        self.font_mid = pygame.font.SysFont("Arial", 22)
-        self.font_huge = pygame.font.SysFont("Arial", 56)
+class GameWidget(Widget):
+    pass
+
+
+class Game(App):
+    def build(self):
+        Window.clearcolor = (0.08, 0.08, 0.12, 1)
 
         self.state = STATE_MENU
-        self.running = True
         self.mode = None
-
         self.world = World()
         self.my_id = None
-        self.host_conn = None
         self.host_lock = threading.Lock()
-
+        self.host_conn = None
         self.sock = None
         self.client_lock = threading.Lock()
-        self.server_ip = "127.0.0.1"
         self.ip_input = ""
+        self.server_ip = "127.0.0.1"
 
         self.state_players = {}
         self.prev_state_players = {}
@@ -54,76 +59,184 @@ class Game:
         self.winner_id = None
         self.reset_requested = False
 
-        # загрузка спрайтов
-        try:
-            self.sprite_host = pygame.image.load("assets/sprites/player1.png").convert_alpha()
-            self.sprite_guest = pygame.image.load("assets/sprites/player2.png").convert_alpha()
-            self.sprite_host = pygame.transform.scale(self.sprite_host, (SIZE, SIZE))
-            self.sprite_guest = pygame.transform.scale(self.sprite_guest, (SIZE, SIZE))
-        except pygame.error as e:
-            print(f"[warn] не удалось загрузить спрайты: {e}")
-            self.sprite_host = None
-            self.sprite_guest = None
+        # Клавиши (для PC)
+        self.keys_pressed = set()
+        Window.bind(on_key_down=self._on_key_down, on_key_up=self._on_key_up)
 
-        # загрузка звуков
+        # Загрузка спрайтов
         try:
-            self.snd_shoot = pygame.mixer.Sound("assets/sounds/shoot.wav")
-            self.snd_hit = pygame.mixer.Sound("assets/sounds/hit.wav")
-            self.snd_death = pygame.mixer.Sound("assets/sounds/death.wav")
-            self.snd_win = pygame.mixer.Sound("assets/sounds/win.wav")
-            self.snd_shoot.set_volume(0.2)
-            self.snd_hit.set_volume(0.5)
-            self.snd_death.set_volume(0.6)
-            self.snd_win.set_volume(0.7)
-        except pygame.error as e:
-            print(f"[warn] не удалось загрузить звуки: {e}")
-            self.snd_shoot = None
-            self.snd_hit = None
-            self.snd_death = None
-            self.snd_win = None
+            self.tex_host = CoreImage("assets/sprites/player1.png").texture
+            self.tex_guest = CoreImage("assets/sprites/player2.png").texture
+        except Exception as e:
+            print(f"[warn] спрайты: {e}")
+            self.tex_host = None
+            self.tex_guest = None
+
+        # Загрузка звуков
+        try:
+            self.snd_shoot = SoundLoader.load("assets/sounds/shoot.wav")
+            self.snd_hit = SoundLoader.load("assets/sounds/hit.wav")
+            self.snd_death = SoundLoader.load("assets/sounds/death.wav")
+            self.snd_win = SoundLoader.load("assets/sounds/win.wav")
+            if self.snd_shoot:
+                self.snd_shoot.volume = 0.1
+            if self.snd_hit:
+                self.snd_hit.volume = 0.12
+            if self.snd_death:
+                self.snd_death.volume = 0.15
+            if self.snd_win:
+                self.snd_win.volume = 0.2
+        except Exception as e:
+            print(f"[warn] звуки: {e}")
+            self.snd_shoot = self.snd_hit = self.snd_death = self.snd_win = None
+
+        self.root = FloatLayout()
+        self.show_menu()
+
+        Clock.schedule_interval(self.update, 1 / FPS)
+        return self.root
+
+    # ---------- КЛАВИАТУРА ----------
+
+    def _on_key_down(self, window, key, scancode, codepoint, modifiers):
+        self.keys_pressed.add(key)
+
+    def _on_key_up(self, window, key, scancode):
+        self.keys_pressed.discard(key)
+
+    def clear_root(self):
+        self.root.clear_widgets()
+        self.root.canvas.clear()
 
     # ---------- МЕНЮ ----------
 
-    def draw_menu(self):
-        self.screen.fill((20, 20, 30))
-        title = self.font_big.render("Сетевая 2D-игра", True, (255, 255, 255))
-        self.screen.blit(title, (W // 2 - title.get_width() // 2, 140))
+    def show_menu(self):
+        self.state = STATE_MENU
+        self.clear_root()
 
-        buttons = [
-            ("Создать игру (хост)", 260),
-            ("Подключиться (гость)", 330),
-            ("Выход", 400),
-        ]
-        self.menu_buttons = []
-        for text, y in buttons:
-            rect = pygame.Rect(W // 2 - 150, y, 300, 50)
-            mouse = pygame.mouse.get_pos()
-            hover = rect.collidepoint(mouse)
-            color = (60, 100, 160) if hover else (40, 60, 100)
-            pygame.draw.rect(self.screen, color, rect, border_radius=8)
-            pygame.draw.rect(self.screen, (100, 140, 200), rect, 2, border_radius=8)
-            t = self.font_mid.render(text, True, (255, 255, 255))
-            self.screen.blit(t, (rect.centerx - t.get_width() // 2,
-                                 rect.centery - t.get_height() // 2))
-            self.menu_buttons.append((rect, text))
+        title = Label(
+            text="Сетевая 2D-игра",
+            font_size=48,
+            size_hint=(1, 0.2),
+            pos_hint={"center_x": 0.5, "top": 0.95},
+        )
+        self.root.add_widget(title)
 
-    def handle_menu_click(self, pos):
-        for rect, text in self.menu_buttons:
-            if rect.collidepoint(pos):
-                if text == "Создать игру (хост)":
-                    self.start_host()
-                elif text == "Подключиться (гость)":
-                    self.state = STATE_CLIENT_LOBBY
-                elif text == "Выход":
-                    self.running = False
+        box = BoxLayout(
+            orientation="vertical",
+            spacing=20,
+            size_hint=(0.6, 0.5),
+            pos_hint={"center_x": 0.5, "center_y": 0.5},
+        )
+        btn_host = Button(text="Создать игру (хост)", font_size=24)
+        btn_host.bind(on_press=lambda x: self.start_host())
+        box.add_widget(btn_host)
+
+        btn_client = Button(text="Подключиться (гость)", font_size=24)
+        btn_client.bind(on_press=lambda x: self.show_client_lobby())
+        box.add_widget(btn_client)
+
+        btn_exit = Button(text="Выход", font_size=24)
+        btn_exit.bind(on_press=lambda x: self.stop())
+        box.add_widget(btn_exit)
+
+        self.root.add_widget(box)
+
+    # ---------- ЛОББИ ГОСТЯ ----------
+
+    def show_client_lobby(self):
+        self.state = STATE_CLIENT_LOBBY
+        self.clear_root()
+
+        title = Label(
+            text="Подключение к игре",
+            font_size=40,
+            size_hint=(1, 0.15),
+            pos_hint={"center_x": 0.5, "top": 0.95},
+        )
+        self.root.add_widget(title)
+
+        label = Label(
+            text="Введите IP хоста:",
+            font_size=24,
+            size_hint=(1, 0.1),
+            pos_hint={"center_x": 0.5, "center_y": 0.7},
+        )
+        self.root.add_widget(label)
+
+        self.ip_field = TextInput(
+            text="127.0.0.1",
+            multiline=False,
+            font_size=24,
+            size_hint=(0.6, 0.08),
+            pos_hint={"center_x": 0.5, "center_y": 0.55},
+        )
+        self.root.add_widget(self.ip_field)
+
+        btn = Button(
+            text="Подключиться",
+            font_size=28,
+            size_hint=(0.4, 0.1),
+            pos_hint={"center_x": 0.5, "center_y": 0.4},
+        )
+        btn.bind(on_press=lambda x: self.start_client(self.ip_field.text.strip() or "127.0.0.1"))
+        self.root.add_widget(btn)
+
+        btn_back = Button(
+            text="← Назад",
+            font_size=20,
+            size_hint=(0.2, 0.08),
+            pos_hint={"x": 0.02, "y": 0.02},
+        )
+        btn_back.bind(on_press=lambda x: self.show_menu())
+        self.root.add_widget(btn_back)
 
     # ---------- ХОСТ ----------
 
     def start_host(self):
         self.mode = "host"
         self.my_id = self.world.add_player("Host")
-        self.state = STATE_HOST_LOBBY
+        self.show_host_lobby()
         threading.Thread(target=self.host_server_thread, daemon=True).start()
+
+    def show_host_lobby(self):
+        self.state = STATE_HOST_LOBBY
+        self.clear_root()
+
+        title = Label(
+            text="Хост — ожидание игрока",
+            font_size=36,
+            size_hint=(1, 0.15),
+            pos_hint={"center_x": 0.5, "top": 0.95},
+        )
+        self.root.add_widget(title)
+
+        local_ip = self.get_local_ip()
+        ip_lbl = Label(
+            text=f"Ваш IP: {local_ip}",
+            font_size=32,
+            color=(0.6, 0.9, 0.6, 1),
+            size_hint=(1, 0.1),
+            pos_hint={"center_x": 0.5, "center_y": 0.6},
+        )
+        self.root.add_widget(ip_lbl)
+
+        hint = Label(
+            text="Сообщите этот IP второму игроку",
+            font_size=20,
+            size_hint=(1, 0.1),
+            pos_hint={"center_x": 0.5, "center_y": 0.5},
+        )
+        self.root.add_widget(hint)
+
+        wait = Label(
+            text="Ждём подключения...",
+            font_size=26,
+            color=(1, 0.8, 0.4, 1),
+            size_hint=(1, 0.1),
+            pos_hint={"center_x": 0.5, "center_y": 0.4},
+        )
+        self.root.add_widget(wait)
 
     def host_server_thread(self):
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -142,7 +255,7 @@ class Game:
         conn.sendall(encode("welcome", {"id": guest_id}))
         threading.Thread(target=self.host_recv_thread, args=(conn, guest_id), daemon=True).start()
 
-        self.state = STATE_GAME
+        Clock.schedule_once(lambda dt: self.show_game(), 0)
 
         while True:
             with self.host_lock:
@@ -158,7 +271,7 @@ class Game:
                 if snap["match_over"] and not self.match_over:
                     self.match_over = True
                     self.winner_id = snap["winner_id"]
-                    self.state = STATE_WIN
+                    Clock.schedule_once(lambda dt: self.show_win_screen(), 0)
                     if self.snd_win:
                         self.snd_win.play()
 
@@ -194,11 +307,10 @@ class Game:
                         self.reset_requested = True
                         self.match_over = False
                         self.winner_id = None
-                    self.state = STATE_GAME
+                    Clock.schedule_once(lambda dt: self.show_game(), 0)
 
         with self.host_lock:
             self.world.remove_player(guest_id)
-        print("[host] игрок 2 отключился")
 
     # ---------- ГОСТЬ ----------
 
@@ -207,20 +319,19 @@ class Game:
         self.server_ip = ip
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            print(f"[client] подключаюсь к {ip}:{PORT}...")
             self.sock.connect((ip, PORT))
-            print("[client] подключён")
+            print(f"[client] подключён к {ip}")
         except OSError as e:
-            print(f"[client] ошибка подключения: {e}")
-            self.state = STATE_MENU
+            print(f"[client] ошибка: {e}")
+            self.show_menu()
             return
 
         threading.Thread(target=self.client_recv_thread, daemon=True).start()
-        self.state = STATE_GAME
+        Clock.schedule_once(lambda dt: self.show_game(), 0)
 
     def client_recv_thread(self):
         buf = b""
-        while self.running:
+        while True:
             try:
                 chunk = self.sock.recv(65536)
             except OSError:
@@ -233,7 +344,6 @@ class Game:
                 msg = decode(line)
                 if msg["t"] == "welcome":
                     self.my_id = msg["p"]["id"]
-                    print(f"[client] я игрок id={self.my_id}")
                 elif msg["t"] == "state":
                     with self.client_lock:
                         self.prev_state_players = self.state_players
@@ -244,52 +354,244 @@ class Game:
                 elif msg["t"] == "match_end":
                     self.match_over = True
                     self.winner_id = msg["p"]["winner_id"]
-                    self.state = STATE_WIN
+                    Clock.schedule_once(lambda dt: self.show_win_screen(), 0)
                     if self.snd_win:
                         self.snd_win.play()
 
-    # ---------- ЛОББИ ГОСТЯ ----------
+    # ---------- ИГРА ----------
 
-    def draw_client_lobby(self):
-        self.screen.fill((20, 20, 30))
-        title = self.font_big.render("Подключение к игре", True, (255, 255, 255))
-        self.screen.blit(title, (W // 2 - title.get_width() // 2, 140))
+    def show_game(self):
+        self.state = STATE_GAME
+        self.clear_root()
 
-        label = self.font_mid.render("Введите IP хоста и нажмите Enter:", True, (200, 200, 200))
-        self.screen.blit(label, (W // 2 - label.get_width() // 2, 230))
+        self.game_widget = GameWidget()
+        self.root.add_widget(self.game_widget)
 
-        box = pygame.Rect(W // 2 - 200, 280, 400, 50)
-        pygame.draw.rect(self.screen, (40, 40, 60), box, border_radius=8)
-        pygame.draw.rect(self.screen, (100, 180, 255), box, 2, border_radius=8)
+        pad = 90
+        self.btn_up = Button(text="↑", size_hint=(None, None), size=(pad, pad),
+                             pos_hint={"x": 0.06, "y": 0.28})
+        self.btn_down = Button(text="↓", size_hint=(None, None), size=(pad, pad),
+                               pos_hint={"x": 0.06, "y": 0.02})
+        self.btn_left = Button(text="←", size_hint=(None, None), size=(pad, pad),
+                               pos_hint={"x": 0.005, "y": 0.15})
+        self.btn_right = Button(text="→", size_hint=(None, None), size=(pad, pad),
+                                pos_hint={"x": 0.115, "y": 0.15})
+        self.btn_shoot = Button(text="ОГОНЬ", size_hint=(None, None), size=(150, 150),
+                                pos_hint={"right": 0.98, "y": 0.1},
+                                background_color=(1, 0.3, 0.3, 1))
 
-        text = self.ip_input if self.ip_input else "127.0.0.1"
-        text_color = (255, 255, 255) if self.ip_input else (120, 120, 120)
-        t = self.font_mid.render(text, True, text_color)
-        self.screen.blit(t, (box.x + 15, box.centery - t.get_height() // 2))
+        for b in (self.btn_up, self.btn_down, self.btn_left, self.btn_right, self.btn_shoot):
+            self.root.add_widget(b)
 
-        hint = self.font.render("Например: 192.168.1.42", True, (120, 120, 140))
-        self.screen.blit(hint, (W // 2 - hint.get_width() // 2, 345))
+    def _btn_active(self, b):
+        return b.state == "down"
 
-        back = self.font.render("Esc — назад", True, (150, 150, 150))
-        self.screen.blit(back, (20, H - 30))
+    def get_input_dx(self):
+        dx = 0
+        if self._btn_active(self.btn_left):
+            dx -= 1
+        if self._btn_active(self.btn_right):
+            dx += 1
+        # Клавиши A / D и стрелки
+        if 97 in self.keys_pressed or 276 in self.keys_pressed:
+            dx -= 1
+        if 100 in self.keys_pressed or 275 in self.keys_pressed:
+            dx += 1
+        return max(-1, min(1, dx))
 
-    # ---------- ЛОББИ ХОСТА ----------
+    def get_input_dy(self):
+        dy = 0
+        if self._btn_active(self.btn_up):
+            dy -= 1
+        if self._btn_active(self.btn_down):
+            dy += 1
+        # Клавиши W / S и стрелки
+        if 119 in self.keys_pressed or 273 in self.keys_pressed:
+            dy -= 1
+        if 115 in self.keys_pressed or 274 in self.keys_pressed:
+            dy += 1
+        return max(-1, min(1, dy))
 
-    def draw_host_lobby(self):
-        self.screen.fill((20, 20, 30))
-        title = self.font_big.render("Хост — ожидание игрока", True, (255, 255, 255))
-        self.screen.blit(title, (W // 2 - title.get_width() // 2, 180))
+    def update(self, dt):
+        if self.state != STATE_GAME:
+            return
+        if not hasattr(self, "game_widget"):
+            return
 
-        local_ip = self.get_local_ip()
-        ip_text = self.font_mid.render(f"Ваш IP: {local_ip}", True, (150, 220, 150))
-        self.screen.blit(ip_text, (W // 2 - ip_text.get_width() // 2, 260))
+        if self.mode == "host":
+            self.update_host()
+        elif self.mode == "client":
+            self.update_client()
 
-        hint = self.font.render("Сообщите этот IP второму игроку", True, (200, 200, 200))
-        self.screen.blit(hint, (W // 2 - hint.get_width() // 2, 300))
+    def update_host(self):
+        dx = self.get_input_dx()
+        dy = self.get_input_dy()
 
-        dots = "." * (int(time.time() * 2) % 4)
-        wait = self.font_mid.render(f"Ждём подключения{dots}", True, (255, 200, 100))
-        self.screen.blit(wait, (W // 2 - wait.get_width() // 2, 360))
+        if self._btn_active(self.btn_shoot) or 32 in self.keys_pressed:
+            with self.host_lock:
+                self.world.shoot(self.my_id)
+            if self.snd_shoot:
+                self.snd_shoot.play()
+
+        with self.host_lock:
+            self.world.set_input(self.my_id, dx, dy)
+            snap = self.world.snapshot()
+
+        self.render_game(snap["players"], snap["bullets"])
+
+    def update_client(self):
+        dx = self.get_input_dx()
+        dy = self.get_input_dy()
+
+        if self._btn_active(self.btn_shoot) or 32 in self.keys_pressed:
+            try:
+                self.sock.sendall(encode("shoot", {}))
+                if self.snd_shoot:
+                    self.snd_shoot.play()
+            except OSError:
+                pass
+
+        try:
+            self.sock.sendall(encode("input", {"dx": dx, "dy": dy}))
+        except OSError:
+            return
+
+        with self.client_lock:
+            snap = dict(self.state_players)
+            bullets = list(self.state_bullets)
+
+        self.render_game(snap, bullets)
+
+    def render_game(self, players, bullets):
+        w = self.game_widget
+        w.canvas.clear()
+
+        sw, sh = Window.size
+        scale_x = sw / W
+        scale_y = sh / H
+
+        with w.canvas:
+            Color(0.08, 0.08, 0.12, 1)
+            Rectangle(pos=(0, 0), size=(sw, sh))
+
+            # Пули
+            Color(1, 0.9, 0.3, 1)
+            for b in bullets:
+                bx = b["x"] * scale_x
+                by = sh - b["y"] * scale_y
+                Rectangle(pos=(bx, by), size=(8, 8))
+
+            # Игроки
+            for pid_s, p in players.items():
+                if not p["alive"]:
+                    continue
+                pid = int(pid_s)
+                angle = p.get("angle", 0)
+
+                x = p["x"] * scale_x
+                y = sh - (p["y"] + SIZE) * scale_y
+                cx = x + (SIZE * scale_x) / 2
+                cy = y + (SIZE * scale_y) / 2
+
+                PushMatrix()
+                Rotate(angle=-angle +180 , origin=(cx, cy))
+
+                tex = self.tex_host if pid == self.my_id else self.tex_guest
+                if tex:
+                    Color(1, 1, 1, 1)
+                    Rectangle(texture=tex,
+                              pos=(cx - (SIZE * scale_x) / 2, cy - (SIZE * scale_y) / 2),
+                              size=(SIZE * scale_x, SIZE * scale_y))
+                else:
+                    if pid == self.my_id:
+                        Color(0.4, 0.9, 0.4, 1)
+                    else:
+                        Color(0.9, 0.4, 0.4, 1)
+                    Rectangle(pos=(cx - (SIZE * scale_x) / 2, cy - (SIZE * scale_y) / 2),
+                              size=(SIZE * scale_x, SIZE * scale_y))
+
+                PopMatrix()
+
+    # ---------- ЭКРАН ПОБЕДЫ ----------
+
+    def show_win_screen(self):
+        self.state = STATE_WIN
+        self.clear_root()
+
+        if self.winner_id == self.my_id:
+            text = "ПОБЕДА!"
+            color = (0.4, 1, 0.4, 1)
+        else:
+            text = "ПОРАЖЕНИЕ"
+            color = (1, 0.4, 0.4, 1)
+
+        title = Label(
+            text=text,
+            font_size=64,
+            color=color,
+            size_hint=(1, 0.2),
+            pos_hint={"center_x": 0.5, "top": 0.9},
+        )
+        self.root.add_widget(title)
+
+        players_dict = self.world.players if self.mode == "host" else self.state_players
+        winner_name = "?"
+        if self.mode == "host":
+            if self.winner_id in players_dict:
+                winner_name = players_dict[self.winner_id]["name"]
+        else:
+            if str(self.winner_id) in players_dict:
+                winner_name = players_dict[str(self.winner_id)]["name"]
+
+        sub = Label(
+            text=f"Победитель: {winner_name}",
+            font_size=36,
+            size_hint=(1, 0.15),
+            pos_hint={"center_x": 0.5, "center_y": 0.6},
+        )
+        self.root.add_widget(sub)
+
+        score_host = 0
+        score_guest = 0
+        for pid_s, p in players_dict.items():
+            if p["name"] == "Host":
+                score_host = p["score"]
+            elif p["name"] == "Guest":
+                score_guest = p["score"]
+
+        score_lbl = Label(
+            text=f"{score_host} : {score_guest}",
+            font_size=64,
+            color=(1, 0.85, 0.3, 1),
+            size_hint=(1, 0.2),
+            pos_hint={"center_x": 0.5, "center_y": 0.4},
+        )
+        self.root.add_widget(score_lbl)
+
+        btn = Button(
+            text="Рестарт",
+            font_size=28,
+            size_hint=(0.4, 0.12),
+            pos_hint={"center_x": 0.5, "y": 0.1},
+        )
+        btn.bind(on_press=lambda x: self.request_reset())
+        self.root.add_widget(btn)
+
+    def request_reset(self):
+        if self.mode == "host":
+            with self.host_lock:
+                self.reset_requested = True
+            self.match_over = False
+            self.winner_id = None
+            self.show_game()
+        elif self.mode == "client":
+            try:
+                self.sock.sendall(encode("reset", {}))
+            except OSError:
+                pass
+            self.match_over = False
+            self.winner_id = None
+            self.show_game()
 
     def get_local_ip(self):
         try:
@@ -300,233 +602,6 @@ class Game:
             return ip
         except OSError:
             return "127.0.0.1"
-
-    # ---------- ЭКРАН ПОБЕДЫ ----------
-
-    def draw_win_screen(self):
-        self.screen.fill((20, 20, 30))
-
-        if self.winner_id == self.my_id:
-            title_text = "ПОБЕДА!"
-            title_color = (100, 255, 120)
-        else:
-            title_text = "ПОРАЖЕНИЕ"
-            title_color = (255, 100, 100)
-
-        title = self.font_huge.render(title_text, True, title_color)
-        self.screen.blit(title, (W // 2 - title.get_width() // 2, 140))
-
-        winner_name = "?"
-        players_dict = self.world.players if self.mode == "host" else self.state_players
-        if str(self.winner_id) in players_dict:
-            if self.mode == "client":
-                winner_name = players_dict[str(self.winner_id)]["name"]
-            else:
-                winner_name = players_dict[self.winner_id]["name"]
-
-        sub = self.font_big.render(f"Победитель: {winner_name}", True, (255, 255, 255))
-        self.screen.blit(sub, (W // 2 - sub.get_width() // 2, 240))
-
-        score_host = 0
-        score_guest = 0
-        for pid_s, p in players_dict.items():
-            if p["name"] == "Host":
-                score_host = p["score"]
-            elif p["name"] == "Guest":
-                score_guest = p["score"]
-
-        score_text = self.font_huge.render(f"{score_host} : {score_guest}", True, (255, 220, 100))
-        self.screen.blit(score_text, (W // 2 - score_text.get_width() // 2, 320))
-
-        hint = self.font_mid.render("Нажмите R для рестарта", True, (200, 200, 200))
-        self.screen.blit(hint, (W // 2 - hint.get_width() // 2, 440))
-
-    # ---------- ИГРА ----------
-
-    def update_game_host(self):
-        keys = pygame.key.get_pressed()
-        if keys[pygame.K_SPACE]:
-            with self.host_lock:
-                self.world.shoot(self.my_id)
-            if self.snd_shoot:
-                self.snd_shoot.play()
-
-        dx = (keys[pygame.K_d] or keys[pygame.K_RIGHT]) - (keys[pygame.K_a] or keys[pygame.K_LEFT])
-        dy = (keys[pygame.K_s] or keys[pygame.K_DOWN]) - (keys[pygame.K_w] or keys[pygame.K_UP])
-
-        with self.host_lock:
-            self.world.set_input(self.my_id, dx, dy)
-            snap = self.world.snapshot()
-
-        self.render_game(snap["players"], snap["bullets"], alpha=1.0, scores=True)
-
-    def update_game_client(self):
-        keys = pygame.key.get_pressed()
-        if keys[pygame.K_SPACE]:
-            try:
-                self.sock.sendall(encode("shoot", {}))
-                if self.snd_shoot:
-                    self.snd_shoot.play()
-            except OSError:
-                self.running = False
-
-        dx = (keys[pygame.K_d] or keys[pygame.K_RIGHT]) - (keys[pygame.K_a] or keys[pygame.K_LEFT])
-        dy = (keys[pygame.K_s] or keys[pygame.K_DOWN]) - (keys[pygame.K_w] or keys[pygame.K_UP])
-        try:
-            self.sock.sendall(encode("input", {"dx": dx, "dy": dy}))
-        except OSError:
-            self.running = False
-            return
-
-        with self.client_lock:
-            snap = dict(self.state_players)
-            snap_prev = dict(self.prev_state_players)
-            snap_bullets = list(self.state_bullets)
-            t_cur = self.state_time
-            t_prev = self.prev_time
-
-        now = time.time()
-        dt = t_cur - t_prev
-        alpha = min(1.0, (now - t_cur) / dt) if dt > 0 else 1.0
-        alpha = max(0.0, alpha)
-
-        self.render_game(snap, snap_bullets, alpha=alpha, prev=snap_prev, scores=True)
-
-    def render_game(self, players, bullets, alpha=1.0, prev=None, scores=False):
-        self.screen.fill((20, 20, 30))
-
-        for b in bullets:
-            pygame.draw.rect(self.screen, (255, 230, 100), (b["x"], b["y"], 6, 6))
-
-        for pid_s, p in players.items():
-            pid = int(pid_s)
-            if not p["alive"]:
-                continue
-
-            if prev is not None:
-                p_prev = prev.get(pid_s, p)
-                x = p_prev["x"] + (p["x"] - p_prev["x"]) * alpha
-                y = p_prev["y"] + (p["y"] - p_prev["y"]) * alpha
-                angle = p.get("angle", 0)
-            else:
-                x, y = p["x"], p["y"]
-                angle = p.get("angle", 0)
-
-            sprite = self.sprite_host if pid == self.my_id else self.sprite_guest
-            if sprite is not None:
-                rotated = pygame.transform.rotate(sprite, angle)
-                rect = rotated.get_rect(center=(x + SIZE // 2, y + SIZE // 2))
-                self.screen.blit(rotated, rect)
-            else:
-                color = (100, 220, 120) if pid == self.my_id else (220, 100, 100)
-                pygame.draw.rect(self.screen, color, (x, y, SIZE, SIZE))
-
-            label = self.font.render(p["name"], True, (255, 255, 255))
-            self.screen.blit(label, (x, y - 34))
-
-            bar_w = SIZE
-            bar_h = 5
-            hp_frac = max(0, p["hp"]) / 100
-            pygame.draw.rect(self.screen, (60, 60, 60), (x, y - 12, bar_w, bar_h))
-            pygame.draw.rect(self.screen, (220, 60, 60), (x, y - 12, bar_w * hp_frac, bar_h))
-
-        if scores:
-            score_host = 0
-            score_guest = 0
-            for pid_s, p in players.items():
-                if p["name"] == "Host":
-                    score_host = p.get("score", 0)
-                elif p["name"] == "Guest":
-                    score_guest = p.get("score", 0)
-            score_text = self.font_big.render(
-                f"Host {score_host}  :  {score_guest} Guest   (до {SCORE_TO_WIN})",
-                True, (255, 220, 100))
-            self.screen.blit(score_text, (W // 2 - score_text.get_width() // 2, 10))
-
-        role = "HOST" if self.mode == "host" else "CLIENT"
-        info = self.font.render(f"{role}  id={self.my_id}  WASD + Пробел — стрелять", True, (200, 200, 200))
-        self.screen.blit(info, (10, H - 30))
-
-    def request_reset(self):
-        if self.mode == "host":
-            with self.host_lock:
-                self.reset_requested = True
-            self.match_over = False
-            self.winner_id = None
-            self.state = STATE_GAME
-        elif self.mode == "client":
-            try:
-                self.sock.sendall(encode("reset", {}))
-            except OSError:
-                pass
-            self.match_over = False
-            self.winner_id = None
-            self.state = STATE_GAME
-
-    # ---------- ГЛАВНЫЙ ЦИКЛ ----------
-
-    def run(self):
-        while self.running:
-            for ev in pygame.event.get():
-                if ev.type == pygame.QUIT:
-                    self.running = False
-
-                if self.state == STATE_MENU:
-                    if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
-                        self.handle_menu_click(ev.pos)
-
-                elif self.state == STATE_CLIENT_LOBBY:
-                    if ev.type == pygame.KEYDOWN:
-                        if ev.key == pygame.K_ESCAPE:
-                            self.state = STATE_MENU
-                            self.ip_input = ""
-                        elif ev.key == pygame.K_RETURN:
-                            ip = self.ip_input.strip() or "127.0.0.1"
-                            self.start_client(ip)
-                        elif ev.key == pygame.K_BACKSPACE:
-                            self.ip_input = self.ip_input[:-1]
-                        else:
-                            ch = ev.unicode
-                            if ch and (ch.isdigit() or ch == "."):
-                                self.ip_input += ch
-
-                elif self.state == STATE_GAME:
-                    if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
-                        if self.mode == "host":
-                            with self.host_lock:
-                                self.world.shoot(self.my_id)
-                            if self.snd_shoot:
-                                self.snd_shoot.play()
-                        elif self.mode == "client":
-                            try:
-                                self.sock.sendall(encode("shoot", {}))
-                                if self.snd_shoot:
-                                    self.snd_shoot.play()
-                            except OSError:
-                                pass
-
-                elif self.state == STATE_WIN:
-                    if ev.type == pygame.KEYDOWN and ev.key == pygame.K_r:
-                        self.request_reset()
-
-            if self.state == STATE_MENU:
-                self.draw_menu()
-            elif self.state == STATE_HOST_LOBBY:
-                self.draw_host_lobby()
-            elif self.state == STATE_CLIENT_LOBBY:
-                self.draw_client_lobby()
-            elif self.state == STATE_GAME:
-                if self.mode == "host":
-                    self.update_game_host()
-                elif self.mode == "client":
-                    self.update_game_client()
-            elif self.state == STATE_WIN:
-                self.draw_win_screen()
-
-            pygame.display.flip()
-            self.clock.tick(FPS)
-
-        pygame.quit()
 
 
 if __name__ == "__main__":
